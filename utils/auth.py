@@ -3,6 +3,7 @@
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
+import os
 
 # Config (you can later load this from .env)
 SECRET_KEY = os.environ.get("SECRET_KEY")

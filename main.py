@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from datetime import timedelta, datetime
 from jose import JWTError, jwt
+import os
 
 from routes.auth import auth_router
 from routes.events import events_router

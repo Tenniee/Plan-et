@@ -11,6 +11,7 @@ from utils.auth import get_current_user, get_current_vendor
 
 from database import get_cursor  # ⬅️ Import your DB function
 from models import UserCreate, Token, VendorSignup
+import os
 
 # Configuration
 SECRET_KEY = os.environ.get("SECRET_KEY")
