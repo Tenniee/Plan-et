@@ -1,16 +1,20 @@
 import pymysql
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # 🔵 Function to get a fresh DB connection and cursor
 def get_cursor():
     try:
         # Establish a new connection
         conn = pymysql.connect(
-            host="127.0.0.1",
-            user="root",
-            password="",
-            port=3306,
-            database="run_events",
-            connect_timeout=5
+            host=os.getenv("DB_HOST"),
+            port=int(os.getenv("DB_PORT")),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            database=os.getenv("DB_NAME")
         )
 
         cursor = conn.cursor()  # ✅ define the cursor here
