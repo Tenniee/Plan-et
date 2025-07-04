@@ -2,9 +2,10 @@
 
 from fastapi import APIRouter, Query, HTTPException, Depends
 from utils.auth import get_current_user, get_current_vendor
-from models import Event, VendorResponse
+from models import Event, VendorResponse, InviteRequest, AcceptInviteRequest, VendorRequest, EditEventRequest, CollaboratorInvite, CollaboratorResponse
 from database import get_cursor
 from typing import Optional, List
+from utils.email_sending import send_collaborator_invite_email 
 
 print("✅ events.py loaded successfully")  # Debug
 
@@ -32,6 +33,78 @@ def create_event(event: Event):
     finally:
         cursor.close()
         conn.close()
+
+
+
+@events_router.put("/edit-event/{event_id}")
+def edit_event(
+    event_id: int,
+    data: EditEventRequest,
+    user_id: int = Depends(get_current_user)
+):
+    conn, cursor = get_cursor()
+    try:
+        # ✅ Ensure event exists and belongs to the user
+        cursor.execute("""
+            SELECT id FROM events
+            WHERE id=%s AND organizer_id=%s
+        """, (event_id, user_id))
+        owner = cursor.fetchone()
+
+        if not owner:
+            # not the owner – check if user is an accepted collaborator
+            cursor.execute("""
+                SELECT id FROM event_collaborators
+                WHERE event_id=%s AND user_id=%s AND accepted=TRUE
+            """, (event_id, user_id))
+            if not cursor.fetchone():
+                raise HTTPException(status_code=403, detail="No permission to edit this event.")
+
+        # ✅ Prepare SQL update fields
+        update_fields = []
+        values = []
+
+        for field, value in data.dict(exclude_unset=True).items():
+            if field == "budget_breakdown":
+                update_fields.append(f"{field} = %s")
+                values.append(json.dumps([item.dict() for item in value]))
+            elif field != "send_update_email":
+                update_fields.append(f"{field} = %s")
+                values.append(value)
+
+        if not update_fields:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        values.append(event_id)
+        update_sql = f"UPDATE events SET {', '.join(update_fields)} WHERE id = %s"
+        cursor.execute(update_sql, tuple(values))
+        conn.commit()
+
+        # ✅ Conditionally send email if requested
+        if data.send_update_email:
+            cursor.execute("""
+                SELECT name, email FROM invitees WHERE event_id = %s
+            """, (event_id,))
+            invitees = cursor.fetchall()
+
+            for invitee in invitees:
+                name = invitee[0] or "Guest"
+                email = invitee[1]
+                # Call your email utility function here
+                send_event_update_email(name, email, event_name=event[1])  # Example call
+
+        return {"message": "Event updated successfully"}
+
+    except Exception as e:
+        print("❌ Edit Event Error:", e)
+        raise HTTPException(status_code=500, detail="Failed to update event")
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+
 
 # ❌ Delete Event
 @events_router.delete("/delete-event")
@@ -260,8 +333,7 @@ def get_pending_requests(vendor_id: int):
 
 @events_router.post("/vendor-request")
 def request_vendor_for_event(
-    vendor_id: int = Query(..., description="ID of the vendor"),
-    event_id: int = Query(..., description="ID of the event"),
+    request: VendorRequest,
     user_id: int = Depends(get_current_user)
 ):
     conn, cursor = get_cursor()
@@ -312,28 +384,60 @@ def request_vendor_for_event(
 def respond_to_event_request(response: VendorResponse):
     conn, cursor = get_cursor()
     try:
-        # Check if a participation record exists
-        cursor.execute(
-            """
+        # ✅ Check if participation record exists
+        cursor.execute("""
             SELECT * FROM event_service_provider_participation
             WHERE event_id = %s AND service_provider_id = %s
-            """,
-            (response.event_id, response.vendor_id)
-        )
+        """, (response.event_id, response.vendor_id))
         record = cursor.fetchone()
 
         if not record:
             raise HTTPException(status_code=404, detail="Participation request not found")
 
-        # Update verified and responded
-        cursor.execute(
-            """
+        # ✅ Update verified and responded
+        cursor.execute("""
             UPDATE event_service_provider_participation
             SET verified = %s, responded = TRUE
             WHERE event_id = %s AND service_provider_id = %s
-            """,
-            (response.accepted, response.event_id, response.vendor_id)
-        )
+        """, (response.accepted, response.event_id, response.vendor_id))
+
+        # ✅ If accepted, update `has_accepted_vendors` and budget_breakdown
+        if response.accepted:
+            # Get service type and price from participation table
+            cursor.execute("""
+                SELECT service_to_be_rendered, price
+                FROM event_service_provider_participation
+                WHERE event_id = %s AND service_provider_id = %s
+            """, (response.event_id, response.vendor_id))
+            service_data = cursor.fetchone()
+
+            if service_data:
+                service_type, price = service_data
+
+                # Get vendor name
+                cursor.execute("SELECT name FROM service_providers WHERE id = %s", (response.vendor_id,))
+                vendor_name = cursor.fetchone()[0]
+
+                # Get current budget_breakdown
+                cursor.execute("SELECT budget_breakdown FROM events WHERE id = %s", (response.event_id,))
+                current_budget = cursor.fetchone()[0]
+
+                # Load and append
+                import json
+                breakdown = json.loads(current_budget) if current_budget else []
+                breakdown.append({
+                    "recipient": vendor_name,
+                    "amount": price,
+                    "category": service_type
+                })
+
+                # Update events table
+                cursor.execute("""
+                    UPDATE events
+                    SET has_accepted_vendors = TRUE, budget_breakdown = %s
+                    WHERE id = %s
+                """, (json.dumps(breakdown), response.event_id))
+
         conn.commit()
 
         return {
@@ -343,7 +447,7 @@ def respond_to_event_request(response: VendorResponse):
     except Exception as e:
         print("❌ Respond to Request Error:", e)
         raise HTTPException(status_code=500, detail="Failed to respond to request")
-    
+
     finally:
         cursor.close()
         conn.close()
@@ -375,6 +479,231 @@ def get_event_requests_status(event_id: int):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cursor.close()
+        conn.close()
+
+
+
+# 🛍️ Fetch all vendors (Public Access)
+@events_router.get("/vendors/all")
+def get_all_vendors():
+    conn, cursor = get_cursor()
+
+    try:
+        cursor.execute("""
+            SELECT 
+                id, name, category, price_small, 
+                price_medium, price_large, rating, tags 
+            FROM service_providers
+        """)
+        vendors = cursor.fetchall()
+
+        result = []
+        for v in vendors:
+            result.append({
+                "vendor_id": v[0],
+                "company_name": v[1],
+                "category": v[2],
+                "price_small": v[3],
+                "price_medium": v[4],
+                "price_large": v[5],
+                "rating": v[6],
+                "tags": v[7].split(",") if v[7] else []
+            })
+
+        return {"vendors": result}
+
+    except Exception as e:
+        print("❌ Error fetching vendors:", e)
+        raise HTTPException(status_code=500, detail="Failed to fetch vendors")
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+
+@events_router.post("/events/invite")
+def invite_users_to_event(request: InviteRequest, user_id: int = Depends(get_current_user)):
+    conn, cursor = get_cursor()
+    try:
+        # ✅ Check if event belongs to the current user
+        cursor.execute("SELECT id FROM events WHERE id = %s AND organizer_id = %s", (request.event_id, user_id))
+        event = cursor.fetchone()
+        if not event:
+            raise HTTPException(status_code=403, detail="You do not have permission to invite users to this event.")
+
+        # ✅ Insert invitees
+        for invitee in request.invitees:
+            cursor.execute("""
+                INSERT INTO event_invitees (event_id, name, email)
+                VALUES (%s, %s, %s)
+            """, (request.event_id, invitee.name, invitee.email))
+
+        # ✅ Update the event to mark guests as invited
+        cursor.execute("""
+            UPDATE events SET has_invited_guests = TRUE WHERE id = %s
+        """, (request.event_id,))
+
+        conn.commit()
+        return {"message": f"{len(request.invitees)} user(s) successfully invited to the event."}
+
+    except Exception as e:
+        print("❌ Invite Users Error:", e)
+        raise HTTPException(status_code=500, detail="Failed to invite users.")
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+
+@events_router.post("/invite/accept")
+def accept_event_invitation(data: AcceptInviteRequest):
+    conn, cursor = get_cursor()
+
+    try:
+        # ✅ Check if invitee exists
+        cursor.execute("""
+            SELECT id, accepted FROM invitees 
+            WHERE email = %s AND event_id = %s
+        """, (data.email, data.event_id))
+        result = cursor.fetchone()
+
+        if not result:
+            raise HTTPException(status_code=404, detail="Invitation not found")
+
+        invitee_id, already_accepted = result
+
+        if already_accepted:
+            return {"message": "You have already accepted this invitation."}
+
+        # ✅ Mark invitee as accepted
+        cursor.execute("""
+            UPDATE invitees
+            SET accepted = TRUE
+            WHERE id = %s
+        """, (invitee_id,))
+
+        # ✅ Update event has_invited to True if not already
+        cursor.execute("""
+            UPDATE events
+            SET has_invited = TRUE
+            WHERE id = %s AND has_invited = FALSE
+        """, (data.event_id,))
+
+        conn.commit()
+
+        return {"message": "Invitation accepted successfully"}
+
+    except Exception as e:
+        print("❌ Accept Invitation Error:", e)
+        raise HTTPException(status_code=500, detail="Failed to accept invitation")
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+
+@events_router.post("/collaborators/invite")
+def send_collaboration_invite(data: CollaboratorInvite, organizer_id: int = Depends(get_current_user)):
+    conn, cursor = get_cursor()
+    try:
+        # ✅ Confirm the event belongs to the current user
+        cursor.execute("SELECT * FROM events WHERE id = %s AND organizer_id = %s", (data.event_id, organizer_id))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=403, detail="You're not allowed to manage this event")
+
+        # ✅ Find user by email
+        cursor.execute("SELECT id FROM users WHERE email = %s", (data.email,))
+        user_row = cursor.fetchone()
+        if not user_row:
+            raise HTTPException(status_code=404, detail="User with that email does not exist")
+
+        user_id = user_row[0]
+
+        # ✅ Check if already invited
+        cursor.execute("""
+            SELECT * FROM collaborators WHERE event_id = %s AND collaborator_id = %s
+        """, (data.event_id, user_id))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="User already invited")
+
+        # ✅ Add collaborator
+        cursor.execute("""
+            INSERT INTO collaborators (event_id, collaborator_id, invited_by)
+            VALUES (%s, %s, %s)
+        """, (data.event_id, user_id, organizer_id))
+
+        conn.commit()
+
+        # ✅ Send invitation email (placeholder logic)
+        send_collaborator_invite_email(to_email=data.email, event_id=data.event_id)
+
+        return {"message": "Collaboration invite sent successfully"}
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@events_router.post("/collaborators/respond")
+def respond_to_collaborator_invite(response: CollaboratorResponse, user_id: int = Depends(get_current_user)):
+    conn, cursor = get_cursor()
+    try:
+        # ✅ Ensure the invite exists
+        cursor.execute("""
+            SELECT * FROM collaborators WHERE event_id = %s AND collaborator_id = %s
+        """, (response.event_id, user_id))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Invite not found")
+
+        # ✅ Update response with accepted status, responded flag, and timestamp
+        cursor.execute("""
+            UPDATE collaborators
+            SET accepted = %s, accepted = TRUE, responded_at = CURRENT_TIMESTAMP
+            WHERE event_id = %s AND collaborator_id = %s
+        """, (response.accepted, response.event_id, user_id))
+
+        conn.commit()
+
+        return {
+            "message": f"Invite {'accepted' if response.accepted else 'declined'} successfully"
+        }
+
+    except Exception as e:
+        print("❌ Collaborator Respond Error:", e)
+        raise HTTPException(status_code=500, detail="Failed to respond to invite")
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+
+@events_router.get("/collaborators/{event_id}")
+def get_collaborators(event_id: int, organizer_id: int = Depends(get_current_user)):
+    conn, cursor = get_cursor()
+    try:
+        cursor.execute("""
+            SELECT u.id, u.name, u.email, c.accepted
+            FROM collaborators c
+            JOIN users u ON u.id = c.collaborator_id
+            WHERE c.event_id = %s
+        """, (event_id,))
+        rows = cursor.fetchall()
+
+        collaborators = [{
+            "id": row[0],
+            "name": row[1],
+            "email": row[2],
+            "accepted": row[3]
+        } for row in rows]
+
+        return {"collaborators": collaborators}
+
     finally:
         cursor.close()
         conn.close()

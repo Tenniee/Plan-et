@@ -9,8 +9,8 @@ from passlib.context import CryptContext
 from typing import Optional
 from utils.auth import get_current_user, get_current_vendor
 
-from database import get_cursor  # ⬅️ Import your DB function
-from models import UserCreate, Token, VendorSignup
+from database import get_cursor  # Import DB function
+from models import UserCreate, Token, VendorSignup, OrganizerUpdate, VendorUpdate
 import os
 
 # Configuration
@@ -230,3 +230,112 @@ def protected_user_route(token: str = Depends(oauth2_scheme)):
         return {"message": f"Welcome {email}, you are authorized!"}
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+
+@auth_router.patch("/profile/update")
+def update_organizer_profile(
+    data: OrganizerUpdate,
+    user_id: int = Depends(get_current_user)
+):
+    conn, cursor = get_cursor()
+    try:
+        # Check if user exists
+        cursor.execute("SELECT id FROM users WHERE id = %s", (user_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="User not found")
+
+        updates = []
+        values = []
+
+        if data.email:
+            updates.append("email = %s")
+            values.append(data.email)
+        if data.password:
+            hashed_pw = hash_password(data.password)
+            updates.append("password = %s")
+            values.append(hashed_pw)
+
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        values.append(user_id)
+
+        cursor.execute(
+            f"UPDATE users SET {', '.join(updates)} WHERE id = %s",
+            tuple(values)
+        )
+        conn.commit()
+
+        return {"message": "Organizer profile updated successfully"}
+
+    except Exception as e:
+        print("❌ Organizer profile update error:", e)
+        raise HTTPException(status_code=500, detail="Failed to update profile")
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+
+
+
+
+
+@auth_router.patch("/profile/vendor/update")
+def update_vendor_profile(
+    data: VendorUpdate,
+    vendor_id: int = Depends(get_current_user)  # assuming token is for vendor
+):
+    conn, cursor = get_cursor()
+    try:
+        # Check if vendor exists
+        cursor.execute("SELECT id FROM service_providers WHERE id = %s", (vendor_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Vendor not found")
+
+        updates = []
+        values = []
+
+        if data.business_name:
+            updates.append("business_name = %s")
+            values.append(data.business_name)
+        if data.account_number:
+            updates.append("account_number = %s")
+            values.append(data.account_number)
+        if data.bank_name:
+            updates.append("bank_name = %s")
+            values.append(data.bank_name)
+        if data.tags:
+            updates.append("tags = %s")
+            values.append(data.tags)
+        if data.price_small is not None:
+            updates.append("price_small = %s")
+            values.append(data.price_small)
+        if data.price_medium is not None:
+            updates.append("price_medium = %s")
+            values.append(data.price_medium)
+        if data.price_large is not None:
+            updates.append("price_large = %s")
+            values.append(data.price_large)
+
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        values.append(vendor_id)
+
+        cursor.execute(
+            f"UPDATE service_providers SET {', '.join(updates)} WHERE id = %s",
+            tuple(values)
+        )
+        conn.commit()
+
+        return {"message": "Vendor profile updated successfully"}
+
+    except Exception as e:
+        print("❌ Vendor profile update error:", e)
+        raise HTTPException(status_code=500, detail="Failed to update vendor profile")
+
+    finally:
+        cursor.close()
+        conn.close()
