@@ -19,30 +19,25 @@ tickets_router = APIRouter()
 
 
 @tickets_router.post("/generate")
-def generate_ticket(event_id: int = Query(...), user_id: int = Query(...)):
+def generate_ticket(event_id: int = Query(...), email: str = Query(...)):
     conn, cursor = get_cursor()
     try:
-        # 1. Validate event exists
+        # ✅ 1. Validate event exists
         cursor.execute("SELECT id FROM events WHERE id = %s", (event_id,))
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="Event not found")
 
-        # 2. Validate user exists
-        cursor.execute("SELECT id FROM users WHERE id = %s", (user_id,))
-        if not cursor.fetchone():
-            raise HTTPException(status_code=404, detail="User not found")
-
-        # 3. Generate unique ticket code
+        # ✅ 2. Generate unique ticket code
         ticket_code = str(uuid.uuid4())
 
-        # 4. Store ticket in DB
+        # ✅ 3. Insert ticket into DB with just event_id and email
         cursor.execute("""
-            INSERT INTO tickets (ticket_code, event_id, user_id)
+            INSERT INTO tickets (ticket_code, event_id, email)
             VALUES (%s, %s, %s)
-        """, (ticket_code, event_id, user_id))
+        """, (ticket_code, event_id, email))
         conn.commit()
 
-        # 5. Generate QR code (base64 image)
+        # ✅ 4. Generate QR code
         qr_code_b64 = generate_qr_code(ticket_code)
 
         return {
@@ -58,6 +53,7 @@ def generate_ticket(event_id: int = Query(...), user_id: int = Query(...)):
     finally:
         cursor.close()
         conn.close()
+
 
 
 
@@ -120,13 +116,13 @@ def get_ticket_logs(event_id: int, user_id: int = Depends(get_current_user)):
     conn, cursor = get_cursor()
     try:
         # ✅ Check if user is the organizer of this event
-        cursor.execute("SELECT organizer_id FROM events WHERE id = %s", (event_id,))
+        cursor.execute("SELECT user_id FROM events WHERE id = %s", (event_id,))
         event = cursor.fetchone()
 
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
 
-        if event["organizer_id"] != user_id:
+        if event[0] != user_id:
             raise HTTPException(status_code=403, detail="Not authorized to view logs for this event")
 
         # ✅ Fetch logs

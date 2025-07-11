@@ -1,19 +1,31 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Union
 
 
-class Event(BaseModel):
-    name: str
-    date: str
-    location: str
-    min_guests: int
-    max_guests: int
+
 
 class BudgetItem(BaseModel):
     vendor_name: str
     amount: int
     service: str
 
+class Event(BaseModel):
+    name: str
+    date: str  # Format: 'dd-mm-yyyy'
+    start_time: str  # Format: 'HH:MM' (24-hour)
+    end_time: str    # Format: 'HH:MM' (24-hour)
+    location: str
+    min_guests: int
+    max_guests: int
+    description: Optional[str] = None
+    total_budget: Optional[float] = None
+    ticket_price: Optional[int] = None
+    is_public: Optional[bool] = True
+    send_update_email: Optional[bool] = False
+    budget_breakdown: Optional[List[BudgetItem]] = None
+
+
+    
 class UserCreate(BaseModel):
     username: str
     password: str
@@ -56,7 +68,9 @@ class VendorRequest(BaseModel):
 
 
 class InitPaymentRequest(BaseModel):
-    event_id: int
+    vendor_id: int
+    package_selected: str  # should be 'small', 'medium', or 'large'
+    event_id: Optional[int] = None
 
 class VendorSignup(BaseModel):
     company_name: str
@@ -72,9 +86,9 @@ class VendorSignup(BaseModel):
     tags: str
 
 
-class InitPaymentRequest(BaseModel):
-    vendor_id: int               
-    event_id: Optional[int] = None  
+#class InitPaymentRequest(BaseModel):
+#    vendor_id: int               
+#    event_id: Optional[int] = None  
 
 class OrganizerUpdate(BaseModel):
     email: Optional[str] = None
@@ -93,13 +107,36 @@ class Invitee(BaseModel):
     name: Optional[str] = None
     email: str
 
+class Invitee(BaseModel):
+    name: Optional[str] = None  # name is optional for cases with just email
+    email: str
+
+
 class InviteRequest(BaseModel):
     event_id: int
-    invitees: List[Invitee]
+    invitees: Union[str, List[Invitee]]  # allows string (comma-separated) OR list
+    personal_message: Optional[str] = "You’ve been invited to an event!"
+
+
 
 class AcceptInviteRequest(BaseModel):
     email: str
     event_id: int
+
+
+
+
+
+
+
+
+
+class CollaboratorInvite(BaseModel):
+    event_id: int
+    email: str
+
+
+
 
 
 

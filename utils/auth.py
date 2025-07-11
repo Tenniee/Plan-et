@@ -4,6 +4,9 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
 
 # Config (you can later load this from .env)
 SECRET_KEY = os.environ.get("SECRET_KEY")
@@ -14,6 +17,7 @@ bearer_scheme = HTTPBearer()
 
 def decode_jwt(token: str):
     try:
+        print("🔑 SECRET_KEY:", SECRET_KEY)
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("sub")
         if user_id is None:

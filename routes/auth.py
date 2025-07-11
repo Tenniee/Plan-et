@@ -12,11 +12,23 @@ from utils.auth import get_current_user, get_current_vendor
 from database import get_cursor  # Import DB function
 from models import UserCreate, Token, VendorSignup, OrganizerUpdate, VendorUpdate
 import os
+import requests
+
+from dotenv import load_dotenv
+load_dotenv()
 
 # Configuration
 SECRET_KEY = os.environ.get("SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+PAYSTACK_BASE_URL = os.environ.get("PAYSTACK_BASE_URL")
+PAYSTACK_SECRET_KEY = os.environ.get("PAYSTACK_SECRET_KEY")  # Or hardcode for now if testing
+
+HEADERS = {
+    "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
+    "Content-Type": "application/json"
+}
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -40,28 +52,45 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-# ⛳ Signup Endpoint
+
 @auth_router.post("/signup", response_model=Token)
 def signup_user(user: UserCreate):
     conn, cursor = get_cursor()
     try:
+        # First check if user already exists
+        cursor.execute("SELECT id FROM users WHERE email = %s", (user.email,))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Email already registered")
+
+        # Hash password
+        hashed_pw = hash_password(user.password)
+
+        # Insert new user
         cursor.execute(
             "INSERT INTO users (email, password, role) VALUES (%s, %s, %s)",
             (user.email, hashed_pw, "organizer")
         )
-        if cursor.fetchone():
-            raise HTTPException(status_code=400, detail="Email already registered")
-
-        hashed_pw = hash_password(user.password)
-        cursor.execute("INSERT INTO users (email, password) VALUES (%s, %s)", (user.email, hashed_pw))
+        user_id = cursor.lastrowid  # 👈🏽 get the new user's ID
         conn.commit()
 
-        access_token = create_access_token({"sub": user.email})
+    
+
+        # Create access token
+        access_token = create_access_token({"sub": user_id})
         return {"access_token": access_token, "token_type": "bearer"}
 
+
+    except mysql.connector.IntegrityError as e:
+        if "Duplicate entry" in str(e):
+            raise HTTPException(status_code=400, detail="Email already registered")
+        else:
+            raise
+
+    
     except Exception as e:
         print("❌ Organizer Signup Error:", e)
         raise HTTPException(status_code=500, detail="Signup failed")
+        
     finally:
         cursor.close()
         conn.close()
@@ -73,12 +102,12 @@ def signup_vendor(data: VendorSignup):
     conn, cursor = get_cursor()
 
     try:
-        # ✅ Check if email already exists
+        # ✅ Check if vendor email already exists
         cursor.execute("SELECT id FROM service_providers WHERE email = %s", (data.email,))
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="Vendor email already registered")
 
-        # ✅ Call Paystack to create subaccount
+        # ✅ Create Paystack subaccount
         payload = {
             "business_name": data.business_name,
             "settlement_bank": data.bank_name,
@@ -93,16 +122,19 @@ def signup_vendor(data: VendorSignup):
             json=payload
         )
 
-        if response.status_code != 200:
+        response_data = response.json()
+
+        if not response_data.get("status"):  # Use the API's JSON 'status' field
             print("⚠️ Paystack error:", response.text)
             raise HTTPException(status_code=500, detail="Failed to create Paystack subaccount")
+
 
         subaccount_code = response.json()["data"]["subaccount_code"]
 
         # ✅ Hash password
         hashed_pw = hash_password(data.password)
 
-        # ✅ Insert vendor data including Paystack subaccount code
+        # ✅ Insert vendor data
         cursor.execute("""
             INSERT INTO service_providers (
                 name, email, password, business_name, 
@@ -127,10 +159,11 @@ def signup_vendor(data: VendorSignup):
             subaccount_code
         ))
 
+        vendor_id = cursor.lastrowid  # 👈🏽 Get the new vendor's ID
         conn.commit()
 
-        # ✅ Return access token
-        access_token = create_access_token({"sub": data.email})
+        # ✅ Generate access token using vendor ID
+        access_token = create_access_token({"sub": str(vendor_id)})
         return {"access_token": access_token, "token_type": "bearer"}
 
     except Exception as e:
@@ -140,7 +173,6 @@ def signup_vendor(data: VendorSignup):
     finally:
         cursor.close()
         conn.close()
-
 
 
 @auth_router.get("/auth/fetch-user-details")
@@ -192,22 +224,24 @@ def get_current_vendor_info(vendor_id: int = Depends(get_current_vendor)):
         conn.close()
 
 
-
-# ⛳ Login Endpoint
 @auth_router.post("/login", response_model=Token)
 def login_user(user: UserCreate):
     conn, cursor = get_cursor()
     try:
-        cursor.execute("SELECT email, password FROM users WHERE email = %s", (user.email,))
+        # ✅ Fetch id and password by email
+        cursor.execute("SELECT id, password FROM users WHERE email = %s", (user.email,))
         result = cursor.fetchone()
+
         if not result:
             raise HTTPException(status_code=401, detail="Invalid email or password")
 
-        db_email, db_password = result
+        user_id, db_password = result
+
         if not verify_password(user.password, db_password):
             raise HTTPException(status_code=401, detail="Invalid email or password")
 
-        access_token = create_access_token({"sub": db_email})
+        # ✅ Use user_id in token
+        access_token = create_access_token({"sub": str(user_id)})
         return {"access_token": access_token, "token_type": "bearer"}
 
     except HTTPException:
@@ -218,6 +252,7 @@ def login_user(user: UserCreate):
     finally:
         cursor.close()
         conn.close()
+
 
 # 🔐 Protected Route
 @auth_router.get("/protected")

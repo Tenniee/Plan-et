@@ -2,9 +2,38 @@
 
 import os
 import requests
+import resend
 
-SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
+SENDGRID_API_KEY = os.getenv("RESEND_API_KEY")
 SENDER_EMAIL = "noreply@zidepeople.com"  # Change this to your actual sender
+
+
+
+def send_email(to_email: str, subject: str, html_content: str):
+    try:
+        response = resend.Emails.send({
+            "from": "Your App Name <onboarding@resend.dev>",
+            "to": [to_email],
+            "subject": subject,
+            "html": html_content
+        })
+        print("📨 Email sent successfully")
+        return response
+    except Exception as e:
+        print("❌ Error sending email:", e)
+        return None
+
+
+
+
+
+
+
+
+
+
+
+
 
 def send_event_update_email(name, recipient_email, event_name):
     subject = f"Update on Event: {event_name}"

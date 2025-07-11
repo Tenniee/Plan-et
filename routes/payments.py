@@ -70,7 +70,8 @@ def initialize_payment(data: InitPaymentRequest, user_id: int = Depends(get_curr
             "amount": amount * 100,
             "reference": reference,
             "subaccount": subaccount_code,
-            "bearer": "subaccount"
+            "bearer": "subaccount",
+            "transaction_charge": 10000 
         }
 
         response = requests.post(
@@ -78,6 +79,9 @@ def initialize_payment(data: InitPaymentRequest, user_id: int = Depends(get_curr
             json=payload,
             headers=HEADERS
         )
+
+        print("⚠️ Paystack error:", response.status_code, response.text)
+
 
         if response.status_code != 200:
             raise HTTPException(status_code=500, detail="Failed to initialize payment")
@@ -88,7 +92,7 @@ def initialize_payment(data: InitPaymentRequest, user_id: int = Depends(get_curr
         # ✅ 7. Store full payment record
         cursor.execute("""
             INSERT INTO payments (
-                sender_id, receiver_id, event_id, amount, reference, status, paystack_subaccount_code, package_selected
+                user_id, receiver_id, event_id, amount, reference, status, paystack_subaccount_code, package_selected
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """, (
@@ -191,7 +195,7 @@ def get_transaction_history(user_id: int = Depends(get_current_user)):
             FROM payments p
             LEFT JOIN events e ON p.event_id = e.id
             LEFT JOIN service_providers sp ON p.receiver_id = sp.id
-            WHERE p.sender_id = %s
+            WHERE p.user_id = %s
             ORDER BY p.paid_at DESC
         """, (user_id,))
 
