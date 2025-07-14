@@ -8,6 +8,7 @@ from fastapi.openapi.models import APIKey, APIKeyIn, SecuritySchemeType
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import APIKeyHeader
 from fastapi import FastAPI, Security
+from fastapi.middleware.cors import CORSMiddleware
 
 from routes.auth import auth_router
 from routes.events import events_router
@@ -31,6 +32,13 @@ app.include_router(events_router, prefix="/events")
 app.include_router(tickets_router, prefix="/tickets")  # ✅ now registered
 app.include_router(payments_router)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 👈 Allow all origins (for development only)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def get_current_user(request: Request):
