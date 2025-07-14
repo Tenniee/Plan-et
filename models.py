@@ -24,6 +24,18 @@ class Event(BaseModel):
     send_update_email: Optional[bool] = False
     budget_breakdown: Optional[List[BudgetItem]] = None
 
+class EventResponse(BaseModel):
+    id: int
+    name: str
+    date: str
+    location: str
+    min_guests: int
+    max_guests: int
+    description: Optional[str]
+    ticket_price: Optional[int]
+    is_public: Optional[bool]
+    start_time: Optional[str]
+    end_time: Optional[str]
 
     
 class UserCreate(BaseModel):

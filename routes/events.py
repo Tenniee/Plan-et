@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Query, HTTPException, Depends
 from utils.auth import get_current_user, get_current_vendor
-from models import Event, VendorResponse, InviteRequest, AcceptInviteRequest, VendorRequest, EditEventRequest, CollaboratorInvite, CollaboratorResponse, CollaboratorInvite, Invitee
+from models import Event, VendorResponse, InviteRequest, AcceptInviteRequest, VendorRequest, EditEventRequest, CollaboratorInvite, CollaboratorResponse, CollaboratorInvite, Invitee, EventResponse
 from database import get_cursor
 from typing import Optional, List
 from utils.email_sending import send_collaborator_invite_email 
@@ -252,6 +252,45 @@ def get_user_events(user_id: int = Query(..., description="ID of the user")):
     except Exception as e:
         print("❌ Error fetching user events:", e)
         raise HTTPException(status_code=500, detail="Failed to fetch events")
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+
+@events_router.get("/events/{event_id}", response_model=EventResponse)
+def get_event_by_id(event_id: int):
+    conn, cursor = get_cursor()
+    try:
+        cursor.execute("""
+            SELECT id, name, date, location, min_guests, max_guests, description,
+                   ticket_price, is_public, start_time, end_time
+            FROM events
+            WHERE id = %s
+        """, (event_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        return EventResponse(
+            id=row[0],
+            name=row[1],
+            date=row[2],
+            location=row[3],
+            min_guests=row[4],
+            max_guests=row[5],
+            description=row[6],
+            ticket_price=row[7],
+            is_public=bool(row[8]),
+            start_time=row[9],
+            end_time=row[10]
+        )
+
+    except Exception as e:
+        print("❌ Fetch Event Error:", e)
+        raise HTTPException(status_code=500, detail="Failed to fetch event")
 
     finally:
         cursor.close()
