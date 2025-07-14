@@ -254,6 +254,37 @@ def login_user(user: UserCreate):
         conn.close()
 
 
+
+@auth_router.post("/vendor/login", response_model=Token)
+def login_user(user: UserCreate):
+    conn, cursor = get_cursor()
+    try:
+        # ✅ Fetch id and password by email
+        cursor.execute("SELECT id, password FROM service_providers WHERE email = %s", (user.email,))
+        result = cursor.fetchone()
+
+        if not result:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+
+        user_id, db_password = result
+
+        if not verify_password(user.password, db_password):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+
+        # ✅ Use user_id in token
+        access_token = create_access_token({"sub": str(user_id)})
+        return {"access_token": access_token, "token_type": "bearer"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("❌ Login error:", e)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    finally:
+        cursor.close()
+        conn.close()
+
+
 # 🔐 Protected Route
 @auth_router.get("/protected")
 def protected_user_route(token: str = Depends(oauth2_scheme)):
